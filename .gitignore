@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+build/
+dist/
+installer_payload/
+*.spec
+
+.env
+.venv/
+venv/
+*.log

@@ -12,6 +12,7 @@ import time
 import threading
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def get_app_dir():
@@ -175,6 +176,10 @@ class CryptoFrame(ttk.Frame):
         self.source_names = ["自动"] + [source['name'] for source in self.data_sources]
         
         self.running = True
+        self.refresh_interval = 1.0
+        self.request_timeout = 2.5
+        self.last_success_source = None
+        self.update_lock = threading.Lock()
         
         self.create_widgets()
         
@@ -441,7 +446,7 @@ class CryptoFrame(ttk.Frame):
             
             proxies = self.proxies if self.proxies else None
             
-            response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+            response = requests.get(url, headers=headers, proxies=proxies, timeout=self.request_timeout)
             response.raise_for_status()
             data = response.json()
             
@@ -459,16 +464,22 @@ class CryptoFrame(ttk.Frame):
                 if source['name'] == selected:
                     price = self.fetch_price_from_source(source, symbol)
                     if price is not None:
-                        self.after(0, lambda: self.status_var.set(f"数据源: {source['name']}"))
+                        self.last_success_source = source['name']
+                        self.after(0, lambda source_name=source['name']: self.status_var.set(f"数据源: {source_name}"))
                         return price
                     else:
-                        self.after(0, lambda: self.status_var.set(f"数据源 {selected} 失败"))
+                        self.after(0, lambda selected_name=selected: self.status_var.set(f"数据源 {selected_name} 失败"))
                         return None
         
-        for source in self.data_sources:
+        sources = list(self.data_sources)
+        if self.last_success_source:
+            sources.sort(key=lambda source: 0 if source['name'] == self.last_success_source else 1)
+
+        for source in sources:
             price = self.fetch_price_from_source(source, symbol)
             if price is not None:
-                self.after(0, lambda: self.status_var.set(f"数据源: {source['name']}"))
+                self.last_success_source = source['name']
+                self.after(0, lambda source_name=source['name']: self.status_var.set(f"数据源: {source_name}"))
                 return price
         
         self.after(0, lambda: self.status_var.set("所有数据源失败"))
@@ -498,45 +509,72 @@ class CryptoFrame(ttk.Frame):
             else:
                 self.crypto_tree.insert('', 'end', values=(symbol, name, "加载中...", "--"), tags=('flat',))
     
+    def _refresh_prices_once(self):
+        symbols = list(self.cryptos.keys())
+        if not symbols:
+            self.after(0, self.refresh_crypto_list)
+            return
+
+        max_workers = min(8, len(symbols))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.fetch_price, symbol): symbol
+                for symbol in symbols
+                if self.running
+            }
+            for future in as_completed(futures):
+                if not self.running:
+                    break
+                symbol = futures[future]
+                try:
+                    price = future.result()
+                except Exception as e:
+                    print(f"刷新{symbol}失败: {e}")
+                    continue
+                if price is not None:
+                    self.crypto_data[symbol] = price
+
+        self.after(0, self.refresh_crypto_list)
+
+        current_time = time.strftime("%H:%M:%S")
+        self.after(0, lambda: self.update_time_var.set(f"最后更新: {current_time}"))
+
     def update_prices(self):
         while self.running:
+            cycle_started = time.monotonic()
+            acquired = self.update_lock.acquire(blocking=False)
+            if not acquired:
+                time.sleep(self.refresh_interval)
+                continue
+
             try:
-                for symbol in list(self.cryptos.keys()):
-                    if not self.running:
-                        break
-                    price = self.fetch_price(symbol)
-                    if price is not None:
-                        self.crypto_data[symbol] = price
-                
-                self.after(0, self.refresh_crypto_list)
-                
-                current_time = time.strftime("%H:%M:%S")
-                self.after(0, lambda: self.update_time_var.set(f"最后更新: {current_time}"))
-                
+                self._refresh_prices_once()
             except Exception as e:
                 self.after(0, lambda: self.status_var.set(f"更新错误: {str(e)}"))
-            
-            time.sleep(1)
+            finally:
+                self.update_lock.release()
+
+            elapsed = time.monotonic() - cycle_started
+            time.sleep(max(0.05, self.refresh_interval - elapsed))
     
     def manual_refresh(self):
         self.status_var.set("正在刷新...")
         threading.Thread(target=self._manual_refresh_thread, daemon=True).start()
     
     def _manual_refresh_thread(self):
+        acquired = self.update_lock.acquire(blocking=False)
+        if not acquired:
+            self.after(0, lambda: self.status_var.set("正在自动刷新，请稍后再试"))
+            return
+
         try:
-            for symbol in list(self.cryptos.keys()):
-                price = self.fetch_price(symbol)
-                if price is not None:
-                    self.crypto_data[symbol] = price
-            
-            self.after(0, self.refresh_crypto_list)
-            
-            current_time = time.strftime("%H:%M:%S")
-            self.after(0, lambda: self.update_time_var.set(f"最后更新: {current_time}"))
+            self._refresh_prices_once()
             self.after(0, lambda: self.status_var.set("手动刷新完成"))
             
         except Exception as e:
             self.after(0, lambda: self.status_var.set(f"刷新失败: {str(e)}"))
+        finally:
+            self.update_lock.release()
     
     def show_settings(self):
         dialog = tk.Toplevel(self.winfo_toplevel())

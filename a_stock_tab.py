@@ -504,12 +504,48 @@ class AStockFrame(ttk.Frame):
             return f'{digits[:2]}:{digits[2:4]}'
         return text or '--'
 
-    def _place_crosshair_label(self, ax, label, x_value, y_value, left_offset=14, right_offset=-132):
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
-        x_offset = right_offset if x_value > (x_min + x_max) / 2 else left_offset
-        y_offset = -88 if y_value > (y_min + y_max) / 2 else 18
-        label.set_position((x_offset, y_offset))
+    def _get_crosshair_tooltip(self, frame, palette):
+        tooltip = getattr(frame, '_crosshair_tooltip', None)
+        if tooltip and tooltip.winfo_exists():
+            return tooltip
+        tooltip = tk.Label(
+            frame,
+            text='',
+            justify=tk.LEFT,
+            anchor=tk.W,
+            bg='white',
+            fg=palette['text'],
+            bd=1,
+            relief=tk.SOLID,
+            padx=8,
+            pady=5,
+            font=('Microsoft YaHei', 8)
+        )
+        frame._crosshair_tooltip = tooltip
+        return tooltip
+
+    def _show_crosshair_tooltip(self, tooltip, event, text):
+        tooltip.configure(text=text)
+        tooltip.update_idletasks()
+        parent_width = max(1, tooltip.master.winfo_width())
+        parent_height = max(1, tooltip.master.winfo_height())
+        width = tooltip.winfo_reqwidth()
+        height = tooltip.winfo_reqheight()
+        x = event.x + 14
+        y = event.y + 14
+        if x + width + 8 > parent_width:
+            x = event.x - width - 14
+        if y + height + 8 > parent_height:
+            y = event.y - height - 14
+        x = max(4, min(x, parent_width - width - 4))
+        y = max(4, min(y, parent_height - height - 4))
+        tooltip.place(x=x, y=y)
+        tooltip.lift()
+
+    def _hide_crosshair_tooltip(self, frame):
+        tooltip = getattr(frame, '_crosshair_tooltip', None)
+        if tooltip and tooltip.winfo_exists():
+            tooltip.place_forget()
 
     def _disconnect_crosshair(self, canvas):
         for cid in getattr(canvas, '_crosshair_cids', []):
@@ -612,62 +648,21 @@ class AStockFrame(ttk.Frame):
         ]
         hline = ax_price.axhline(0, color='#243047', linewidth=1.05, linestyle='--', alpha=0.78, visible=False, zorder=20)
         marker = ax_price.scatter([], [], s=42, color=palette['price'], edgecolor='white', linewidth=1.0, visible=False, zorder=21)
-        label = ax_price.annotate(
-            '',
-            xy=(0, 0),
-            xytext=(14, 18),
-            textcoords='offset points',
-            fontsize=8,
-            color=palette['text'],
-            bbox=dict(boxstyle='round,pad=0.32', fc='white', ec=palette['border'], lw=0.9, alpha=0.96),
-            visible=False,
-            zorder=22
-        )
-        price_tag = ax_price.annotate(
-            '',
-            xy=(0.995, 0),
-            xycoords=('axes fraction', 'data'),
-            xytext=(-4, 0),
-            textcoords='offset points',
-            ha='right',
-            va='center',
-            fontsize=8,
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.18', fc=palette['price'], ec=palette['price'], lw=0.8, alpha=0.96),
-            visible=False,
-            clip_on=True,
-            zorder=23
-        )
-        time_tag = ax_macd.annotate(
-            '',
-            xy=(0, 0),
-            xycoords=('data', 'axes fraction'),
-            xytext=(0, 3),
-            textcoords='offset points',
-            ha='center',
-            va='bottom',
-            fontsize=8,
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.18', fc='#243047', ec='#243047', lw=0.8, alpha=0.96),
-            visible=False,
-            clip_on=True,
-            zorder=23
-        )
-        hover_state = {'idx': None, 'draw_at': 0.0}
-        hover_artists = vlines + [hline, marker, label, price_tag, time_tag]
+        tooltip = self._get_crosshair_tooltip(frame, palette)
+        hover_state = {'idx': None, 'draw_at': 0.0, 'visible': False}
+        hover_artists = vlines + [hline, marker]
         render_hover, clear_hover, draw_cid = self._setup_crosshair_blit(canvas, hover_artists, use_axes_bbox=False)
 
         def hide():
-            if not label.get_visible():
+            if not hover_state['visible']:
                 return
             hover_state['idx'] = None
+            hover_state['visible'] = False
             for line in vlines:
                 line.set_visible(False)
             hline.set_visible(False)
             marker.set_visible(False)
-            label.set_visible(False)
-            price_tag.set_visible(False)
-            time_tag.set_visible(False)
+            self._hide_crosshair_tooltip(frame)
             clear_hover()
 
         def on_motion(event):
@@ -676,10 +671,10 @@ class AStockFrame(ttk.Frame):
                 return
 
             idx = int(np.clip(round(event.xdata), 0, len(prices) - 1))
-            if label.get_visible() and hover_state['idx'] == idx:
+            if hover_state['visible'] and hover_state['idx'] == idx:
                 return
             now = time.perf_counter()
-            if label.get_visible() and now - hover_state['draw_at'] < 0.025:
+            if hover_state['visible'] and now - hover_state['draw_at'] < 0.025:
                 return
             hover_state['idx'] = idx
             hover_state['draw_at'] = now
@@ -711,19 +706,8 @@ class AStockFrame(ttk.Frame):
             marker.set_offsets([[idx, price]])
             marker.set_facecolor(change_color)
             marker.set_visible(True)
-            label.xy = (idx, price)
-            label.set_text('\n'.join(detail_lines))
-            label.get_bbox_patch().set_edgecolor(change_color)
-            self._place_crosshair_label(ax_price, label, idx, price, right_offset=-150)
-            label.set_visible(True)
-            price_tag.xy = (0.995, price)
-            price_tag.set_text(f'{price:.2f}')
-            price_tag.get_bbox_patch().set_facecolor(change_color)
-            price_tag.get_bbox_patch().set_edgecolor(change_color)
-            price_tag.set_visible(True)
-            time_tag.xy = (idx, 0)
-            time_tag.set_text(time_label)
-            time_tag.set_visible(True)
+            hover_state['visible'] = True
+            self._show_crosshair_tooltip(tooltip, event, '\n'.join(detail_lines))
             render_hover()
 
         canvas._crosshair_cids = [
@@ -748,62 +732,21 @@ class AStockFrame(ttk.Frame):
         ]
         hline = ax_price.axhline(0, color='#243047', linewidth=1.05, linestyle='--', alpha=0.78, visible=False, zorder=20)
         marker = ax_price.scatter([], [], s=42, color=palette['text'], edgecolor='white', linewidth=1.0, visible=False, zorder=21)
-        label = ax_price.annotate(
-            '',
-            xy=(0, 0),
-            xytext=(14, 18),
-            textcoords='offset points',
-            fontsize=8,
-            color=palette['text'],
-            bbox=dict(boxstyle='round,pad=0.32', fc='white', ec=palette['border'], lw=0.9, alpha=0.96),
-            visible=False,
-            zorder=22
-        )
-        price_tag = ax_price.annotate(
-            '',
-            xy=(0.995, 0),
-            xycoords=('axes fraction', 'data'),
-            xytext=(-4, 0),
-            textcoords='offset points',
-            ha='right',
-            va='center',
-            fontsize=8,
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.18', fc=palette['text'], ec=palette['text'], lw=0.8, alpha=0.96),
-            visible=False,
-            clip_on=True,
-            zorder=23
-        )
-        date_tag = ax_macd.annotate(
-            '',
-            xy=(0, 0),
-            xycoords=('data', 'axes fraction'),
-            xytext=(0, 3),
-            textcoords='offset points',
-            ha='center',
-            va='bottom',
-            fontsize=8,
-            color='white',
-            bbox=dict(boxstyle='round,pad=0.18', fc='#243047', ec='#243047', lw=0.8, alpha=0.96),
-            visible=False,
-            clip_on=True,
-            zorder=23
-        )
-        hover_state = {'idx': None, 'draw_at': 0.0}
-        hover_artists = vlines + [hline, marker, label, price_tag, date_tag]
+        tooltip = self._get_crosshair_tooltip(frame, palette)
+        hover_state = {'idx': None, 'draw_at': 0.0, 'visible': False}
+        hover_artists = vlines + [hline, marker]
         render_hover, clear_hover, draw_cid = self._setup_crosshair_blit(canvas, hover_artists, use_axes_bbox=True)
 
         def hide():
-            if not label.get_visible():
+            if not hover_state['visible']:
                 return
             hover_state['idx'] = None
+            hover_state['visible'] = False
             for line in vlines:
                 line.set_visible(False)
             hline.set_visible(False)
             marker.set_visible(False)
-            label.set_visible(False)
-            price_tag.set_visible(False)
-            date_tag.set_visible(False)
+            self._hide_crosshair_tooltip(frame)
             clear_hover()
 
         def on_motion(event):
@@ -812,10 +755,10 @@ class AStockFrame(ttk.Frame):
                 return
 
             idx = int(np.clip(round(event.xdata), 0, len(dates) - 1))
-            if label.get_visible() and hover_state['idx'] == idx:
+            if hover_state['visible'] and hover_state['idx'] == idx:
                 return
             now = time.perf_counter()
-            if label.get_visible() and now - hover_state['draw_at'] < 0.025:
+            if hover_state['visible'] and now - hover_state['draw_at'] < 0.025:
                 return
             hover_state['idx'] = idx
             hover_state['draw_at'] = now
@@ -843,19 +786,8 @@ class AStockFrame(ttk.Frame):
             marker.set_facecolor(marker_color)
             marker.set_edgecolor('white')
             marker.set_visible(True)
-            label.xy = (idx, closes[idx])
-            label.set_text('\n'.join(detail_lines))
-            label.get_bbox_patch().set_edgecolor(marker_color)
-            self._place_crosshair_label(ax_price, label, idx, closes[idx], right_offset=-150)
-            label.set_visible(True)
-            price_tag.xy = (0.995, closes[idx])
-            price_tag.set_text(f'{closes[idx]:.2f}')
-            price_tag.get_bbox_patch().set_facecolor(marker_color)
-            price_tag.get_bbox_patch().set_edgecolor(marker_color)
-            price_tag.set_visible(True)
-            date_tag.xy = (idx, 0)
-            date_tag.set_text(dates[idx][5:] if len(dates[idx]) > 5 else dates[idx])
-            date_tag.set_visible(True)
+            hover_state['visible'] = True
+            self._show_crosshair_tooltip(tooltip, event, '\n'.join(detail_lines))
             render_hover()
 
         canvas._crosshair_cids = [
@@ -872,6 +804,7 @@ class AStockFrame(ttk.Frame):
         canvas = getattr(frame, '_chart_canvas', None)
         if canvas and canvas.get_tk_widget().winfo_exists():
             self._disconnect_crosshair(canvas)
+            self._hide_crosshair_tooltip(frame)
             fig = canvas.figure
             fig.clear()
             fig.set_size_inches(figsize[0], figsize[1], forward=False)

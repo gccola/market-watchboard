@@ -519,6 +519,83 @@ class AStockFrame(ttk.Frame):
                 pass
         canvas._crosshair_cids = []
 
+    def _setup_crosshair_blit(self, canvas, artists, use_axes_bbox=True):
+        state = {'backgrounds': None, 'background': None}
+        axes = []
+        for artist in artists:
+            if artist.axes and artist.axes not in axes:
+                axes.append(artist.axes)
+            artist.set_animated(True)
+
+        if not axes:
+            axes = list(canvas.figure.axes)
+
+        def cache_background(event=None):
+            try:
+                if use_axes_bbox:
+                    state['backgrounds'] = [
+                        (ax, canvas.copy_from_bbox(ax.bbox))
+                        for ax in axes
+                    ]
+                    state['background'] = None
+                else:
+                    state['background'] = canvas.copy_from_bbox(canvas.figure.bbox)
+                    state['backgrounds'] = None
+            except Exception:
+                state['backgrounds'] = None
+                state['background'] = None
+
+        def render_hover():
+            if use_axes_bbox and state['backgrounds'] is None:
+                canvas.draw_idle()
+                return
+            if not use_axes_bbox and state['background'] is None:
+                canvas.draw_idle()
+                return
+            try:
+                if use_axes_bbox:
+                    for ax, background in state['backgrounds']:
+                        canvas.restore_region(background)
+                else:
+                    canvas.restore_region(state['background'])
+                for artist in artists:
+                    if artist.get_visible() and artist.axes:
+                        artist.axes.draw_artist(artist)
+                if use_axes_bbox:
+                    for ax, _background in state['backgrounds']:
+                        canvas.blit(ax.bbox)
+                else:
+                    canvas.blit(canvas.figure.bbox)
+            except Exception:
+                state['backgrounds'] = None
+                state['background'] = None
+                canvas.draw_idle()
+
+        def clear_hover():
+            if use_axes_bbox and state['backgrounds'] is None:
+                canvas.draw_idle()
+                return
+            if not use_axes_bbox and state['background'] is None:
+                canvas.draw_idle()
+                return
+            try:
+                if use_axes_bbox:
+                    for ax, background in state['backgrounds']:
+                        canvas.restore_region(background)
+                        canvas.blit(ax.bbox)
+                else:
+                    canvas.restore_region(state['background'])
+                    canvas.blit(canvas.figure.bbox)
+            except Exception:
+                state['backgrounds'] = None
+                state['background'] = None
+                canvas.draw_idle()
+
+        cid = canvas.mpl_connect('draw_event', cache_background)
+        canvas.draw()
+        cache_background()
+        return render_hover, clear_hover, cid
+
     def _attach_intraday_crosshair(self, frame, axes, times, prices, average_array, volumes, palette, yesterday_close):
         canvas = getattr(frame, '_chart_canvas', None)
         if not canvas or not prices:
@@ -548,35 +625,37 @@ class AStockFrame(ttk.Frame):
         )
         price_tag = ax_price.annotate(
             '',
-            xy=(1, 0),
+            xy=(0.995, 0),
             xycoords=('axes fraction', 'data'),
-            xytext=(5, 0),
+            xytext=(-4, 0),
             textcoords='offset points',
-            ha='left',
+            ha='right',
             va='center',
             fontsize=8,
             color='white',
             bbox=dict(boxstyle='round,pad=0.18', fc=palette['price'], ec=palette['price'], lw=0.8, alpha=0.96),
             visible=False,
-            clip_on=False,
+            clip_on=True,
             zorder=23
         )
         time_tag = ax_macd.annotate(
             '',
             xy=(0, 0),
             xycoords=('data', 'axes fraction'),
-            xytext=(0, -17),
+            xytext=(0, 3),
             textcoords='offset points',
             ha='center',
-            va='top',
+            va='bottom',
             fontsize=8,
             color='white',
             bbox=dict(boxstyle='round,pad=0.18', fc='#243047', ec='#243047', lw=0.8, alpha=0.96),
             visible=False,
-            clip_on=False,
+            clip_on=True,
             zorder=23
         )
         hover_state = {'idx': None, 'draw_at': 0.0}
+        hover_artists = vlines + [hline, marker, label, price_tag, time_tag]
+        render_hover, clear_hover, draw_cid = self._setup_crosshair_blit(canvas, hover_artists, use_axes_bbox=False)
 
         def hide():
             if not label.get_visible():
@@ -589,7 +668,7 @@ class AStockFrame(ttk.Frame):
             label.set_visible(False)
             price_tag.set_visible(False)
             time_tag.set_visible(False)
-            canvas.draw_idle()
+            clear_hover()
 
         def on_motion(event):
             if event.inaxes not in axes or event.xdata is None:
@@ -637,7 +716,7 @@ class AStockFrame(ttk.Frame):
             label.get_bbox_patch().set_edgecolor(change_color)
             self._place_crosshair_label(ax_price, label, idx, price, right_offset=-150)
             label.set_visible(True)
-            price_tag.xy = (1, price)
+            price_tag.xy = (0.995, price)
             price_tag.set_text(f'{price:.2f}')
             price_tag.get_bbox_patch().set_facecolor(change_color)
             price_tag.get_bbox_patch().set_edgecolor(change_color)
@@ -645,9 +724,10 @@ class AStockFrame(ttk.Frame):
             time_tag.xy = (idx, 0)
             time_tag.set_text(time_label)
             time_tag.set_visible(True)
-            canvas.draw_idle()
+            render_hover()
 
         canvas._crosshair_cids = [
+            draw_cid,
             canvas.mpl_connect('motion_notify_event', on_motion),
             canvas.mpl_connect('figure_leave_event', lambda event: hide()),
         ]
@@ -681,35 +761,37 @@ class AStockFrame(ttk.Frame):
         )
         price_tag = ax_price.annotate(
             '',
-            xy=(1, 0),
+            xy=(0.995, 0),
             xycoords=('axes fraction', 'data'),
-            xytext=(5, 0),
+            xytext=(-4, 0),
             textcoords='offset points',
-            ha='left',
+            ha='right',
             va='center',
             fontsize=8,
             color='white',
             bbox=dict(boxstyle='round,pad=0.18', fc=palette['text'], ec=palette['text'], lw=0.8, alpha=0.96),
             visible=False,
-            clip_on=False,
+            clip_on=True,
             zorder=23
         )
         date_tag = ax_macd.annotate(
             '',
             xy=(0, 0),
             xycoords=('data', 'axes fraction'),
-            xytext=(0, -17),
+            xytext=(0, 3),
             textcoords='offset points',
             ha='center',
-            va='top',
+            va='bottom',
             fontsize=8,
             color='white',
             bbox=dict(boxstyle='round,pad=0.18', fc='#243047', ec='#243047', lw=0.8, alpha=0.96),
             visible=False,
-            clip_on=False,
+            clip_on=True,
             zorder=23
         )
         hover_state = {'idx': None, 'draw_at': 0.0}
+        hover_artists = vlines + [hline, marker, label, price_tag, date_tag]
+        render_hover, clear_hover, draw_cid = self._setup_crosshair_blit(canvas, hover_artists, use_axes_bbox=True)
 
         def hide():
             if not label.get_visible():
@@ -722,7 +804,7 @@ class AStockFrame(ttk.Frame):
             label.set_visible(False)
             price_tag.set_visible(False)
             date_tag.set_visible(False)
-            canvas.draw_idle()
+            clear_hover()
 
         def on_motion(event):
             if event.inaxes not in axes or event.xdata is None:
@@ -766,7 +848,7 @@ class AStockFrame(ttk.Frame):
             label.get_bbox_patch().set_edgecolor(marker_color)
             self._place_crosshair_label(ax_price, label, idx, closes[idx], right_offset=-150)
             label.set_visible(True)
-            price_tag.xy = (1, closes[idx])
+            price_tag.xy = (0.995, closes[idx])
             price_tag.set_text(f'{closes[idx]:.2f}')
             price_tag.get_bbox_patch().set_facecolor(marker_color)
             price_tag.get_bbox_patch().set_edgecolor(marker_color)
@@ -774,9 +856,10 @@ class AStockFrame(ttk.Frame):
             date_tag.xy = (idx, 0)
             date_tag.set_text(dates[idx][5:] if len(dates[idx]) > 5 else dates[idx])
             date_tag.set_visible(True)
-            canvas.draw_idle()
+            render_hover()
 
         canvas._crosshair_cids = [
+            draw_cid,
             canvas.mpl_connect('motion_notify_event', on_motion),
             canvas.mpl_connect('figure_leave_event', lambda event: hide()),
         ]
@@ -803,10 +886,14 @@ class AStockFrame(ttk.Frame):
             canvas = FigureCanvasTkAgg(fig, master=frame)
             frame._chart_canvas = canvas
             canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        canvas.draw_idle()
+        # Crosshair setup performs the immediate draw needed for blit background caching.
 
     def _show_chart_message(self, frame, text, font=('Microsoft YaHei', 12)):
         if frame.winfo_children():
+            for child in frame.winfo_children():
+                if isinstance(child, ttk.Label):
+                    child.configure(text=text)
+                    return
             return
         ttk.Label(frame, text=text, font=font).pack(pady=50)
 
@@ -916,6 +1003,8 @@ class AStockFrame(ttk.Frame):
                     realtime_data=realtime_data
                 )
                 context['last_realtime_signature'] = realtime_signature
+            elif not realtime_signature:
+                self._show_chart_message(context['realtime_frame'], "获取分时数据失败")
 
             if refresh_kline:
                 kline_signature = (
@@ -929,6 +1018,8 @@ class AStockFrame(ttk.Frame):
                         kline_data=kline_data
                     )
                     context['last_kline_signature'] = kline_signature
+                elif not kline_signature:
+                    self._show_chart_message(context['kline_frame'], "获取K线数据失败")
                 context['last_kline_refresh'] = time.monotonic()
         finally:
             if context is self.chart_context:
@@ -990,12 +1081,26 @@ class AStockFrame(ttk.Frame):
             'full_code': full_code,
             'name': name,
             'refresh_count': 0,
-            'refresh_in_progress': False,
+            'refresh_in_progress': True,
             'last_kline_refresh': time.monotonic(),
         }
-        self.draw_realtime_chart(realtime_frame, full_code, name)
-        self.draw_stock_chart(kline_frame, full_code, name)
-        self._schedule_chart_refresh()
+        self._show_chart_message(realtime_frame, "分时数据加载中...")
+        self._show_chart_message(kline_frame, "K线数据加载中...")
+
+        context = self.chart_context
+
+        def fetch_initial_chart():
+            try:
+                realtime_data = self.fetch_realtime_data(full_code)
+                kline_data = self.fetch_kline_data(full_code)
+            except Exception as e:
+                print(f"初始加载走势图失败: {e}")
+                realtime_data = None
+                kline_data = None
+            self.chart_refresh_queue.put((context, realtime_data, kline_data, True))
+
+        threading.Thread(target=fetch_initial_chart, daemon=True).start()
+        context['refresh_poll_job'] = chart_window.after(50, self._poll_chart_refresh_queue)
     
     def draw_realtime_chart(self, window, full_code, name, realtime_data=None):
         try:

@@ -176,10 +176,15 @@ class CryptoFrame(ttk.Frame):
         self.source_names = ["自动"] + [source['name'] for source in self.data_sources]
         
         self.running = True
-        self.refresh_interval = 1.0
+        self.active = False
+        self.window_visible = True
+        self.refresh_interval = 3.0
+        self.background_refresh_interval = 20.0
+        self.hidden_refresh_interval = 60.0
         self.request_timeout = 2.5
         self.last_success_source = None
         self.update_lock = threading.Lock()
+        self._refresh_now = threading.Event()
         
         self.create_widgets()
         
@@ -309,7 +314,7 @@ class CryptoFrame(ttk.Frame):
         ttk.Label(bottom_frame, textvariable=self.update_time_var, 
                  font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(5, 0))
         
-        ttk.Label(bottom_frame, text="刷新: 1秒", 
+        ttk.Label(bottom_frame, text="前台: 3秒",
                  font=('Arial', 8), foreground='gray').grid(row=1, column=2, sticky=tk.E, pady=(5, 0))
         
         self.status_var = tk.StringVar(value="就绪")
@@ -323,6 +328,27 @@ class CryptoFrame(ttk.Frame):
         ttk.Button(btn_frame, text="设置", command=self.show_settings).pack(side=tk.LEFT, padx=2)
         
         self.refresh_crypto_list()
+
+    def set_refresh_active(self, active, visible=True):
+        was_active = self.active
+        self.active = bool(active)
+        self.window_visible = bool(visible)
+        if self.active and not was_active:
+            self.request_refresh()
+
+    def request_refresh(self):
+        self._refresh_now.set()
+
+    def _current_refresh_interval(self):
+        if not self.window_visible:
+            return self.hidden_refresh_interval
+        if not self.active:
+            return self.background_refresh_interval
+        return self.refresh_interval
+
+    def _wait_for_next_refresh(self, seconds):
+        self._refresh_now.wait(max(0.05, seconds))
+        self._refresh_now.clear()
     
     def show_add_crypto_dialog(self):
         available_cryptos = {
@@ -541,10 +567,14 @@ class CryptoFrame(ttk.Frame):
 
     def update_prices(self):
         while self.running:
+            if not self.active or not self.window_visible:
+                self._wait_for_next_refresh(1.0)
+                continue
+
             cycle_started = time.monotonic()
             acquired = self.update_lock.acquire(blocking=False)
             if not acquired:
-                time.sleep(self.refresh_interval)
+                self._wait_for_next_refresh(self._current_refresh_interval())
                 continue
 
             try:
@@ -555,7 +585,7 @@ class CryptoFrame(ttk.Frame):
                 self.update_lock.release()
 
             elapsed = time.monotonic() - cycle_started
-            time.sleep(max(0.05, self.refresh_interval - elapsed))
+            self._wait_for_next_refresh(self._current_refresh_interval() - elapsed)
     
     def manual_refresh(self):
         self.status_var.set("正在刷新...")

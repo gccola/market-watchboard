@@ -12,7 +12,7 @@ APP_NAME = "行情看板"
 SETUP_NAME = "行情看板安装包"
 ROOT = Path(__file__).resolve().parent
 PAYLOAD = ROOT / "installer_payload"
-CONFIG_FILES = ("config.json", "stocks.json", "crypto.json")
+CONFIG_FILES = ("config.json", "stocks.json", "us_stocks.json", "crypto.json")
 
 
 def run(command):

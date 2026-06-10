@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Windows桌面小工具：行情看板（A股 + 加密行情）
+Windows桌面小工具：行情看板（A股 + 美股 + 期货 + 加密行情）
 支持选项卡切换，系统托盘常驻，透明度调节
 """
 
@@ -18,6 +18,8 @@ import winerror
 from pynput import keyboard
 
 from a_stock_tab import AStockFrame
+from us_stock_tab import USStockFrame
+from futures_tab import FuturesFrame
 from crypto_tab import CryptoFrame
 
 
@@ -87,9 +89,44 @@ class MarketTicker:
         
         self.a_stock_tab = AStockFrame(self.notebook, self)
         self.crypto_tab = CryptoFrame(self.notebook, self)
-        
+        self.futures_tab = FuturesFrame(self.notebook, self)
+        self.us_stock_tab = USStockFrame(self.notebook, self)
+
         self.notebook.add(self.a_stock_tab, text="A股行情")
         self.notebook.add(self.crypto_tab, text="加密行情")
+        self.notebook.add(self.futures_tab, text="期货")
+        self.notebook.add(self.us_stock_tab, text="美股行情")
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        self.root.bind("<Map>", self.on_window_visibility_changed)
+        self.root.bind("<Unmap>", self.on_window_visibility_changed)
+        self.root.after(0, self.update_tab_refresh_states)
+
+    def is_window_visible(self):
+        try:
+            return self.root.state() not in ('withdrawn', 'iconic')
+        except tk.TclError:
+            return False
+
+    def on_tab_changed(self, event=None):
+        self.update_tab_refresh_states()
+
+    def on_window_visibility_changed(self, event=None):
+        if event is not None and event.widget is not self.root:
+            return
+        self.root.after(100, self.update_tab_refresh_states)
+
+    def update_tab_refresh_states(self):
+        if not hasattr(self, 'notebook'):
+            return
+        try:
+            selected = self.notebook.select()
+        except tk.TclError:
+            return
+
+        visible = self.is_window_visible()
+        for tab in (self.a_stock_tab, self.us_stock_tab, self.futures_tab, self.crypto_tab):
+            if hasattr(tab, 'set_refresh_active'):
+                tab.set_refresh_active(visible and str(tab) == selected, visible)
     
     def create_tray_icon(self):
         image = Image.new('RGB', (64, 64), color='#1a1a2e')
@@ -117,12 +154,21 @@ class MarketTicker:
             self.root.state('normal')
         else:
             self.root.withdraw()
+        self.update_tab_refresh_states()
     
     def set_alpha(self, alpha):
         self.alpha = alpha
         windows = [self.root]
         if hasattr(self, 'a_stock_tab'):
             chart_window = getattr(self.a_stock_tab, 'chart_window', None)
+            if chart_window is not None:
+                windows.append(chart_window)
+        if hasattr(self, 'us_stock_tab'):
+            chart_window = getattr(self.us_stock_tab, 'chart_window', None)
+            if chart_window is not None:
+                windows.append(chart_window)
+        if hasattr(self, 'futures_tab'):
+            chart_window = getattr(self.futures_tab, 'chart_window', None)
             if chart_window is not None:
                 windows.append(chart_window)
         for window in windows:
@@ -133,6 +179,12 @@ class MarketTicker:
                 pass
 
         alpha_var = getattr(getattr(self, 'a_stock_tab', None), 'alpha_var', None)
+        if alpha_var is not None and abs(alpha_var.get() - alpha) > 0.001:
+            alpha_var.set(alpha)
+        alpha_var = getattr(getattr(self, 'us_stock_tab', None), 'alpha_var', None)
+        if alpha_var is not None and abs(alpha_var.get() - alpha) > 0.001:
+            alpha_var.set(alpha)
+        alpha_var = getattr(getattr(self, 'futures_tab', None), 'alpha_var', None)
         if alpha_var is not None and abs(alpha_var.get() - alpha) > 0.001:
             alpha_var.set(alpha)
     
@@ -149,6 +201,8 @@ class MarketTicker:
     def quit_application(self):
         self.save_config()
         self.a_stock_tab.running = False
+        self.us_stock_tab.running = False
+        self.futures_tab.running = False
         self.crypto_tab.running = False
         self.tray_icon.stop()
         self.root.destroy()
@@ -166,6 +220,7 @@ class MarketTicker:
     def on_closing(self):
         self.save_config()
         self.root.withdraw()
+        self.update_tab_refresh_states()
 
 
 def main():

@@ -52,12 +52,19 @@ class AStockFrame(ttk.Frame):
         self.source_names = ["自动"] + [s['name'] for s in self.data_sources]
         
         self.running = True
+        self.active = False
+        self.window_visible = True
+        self.refresh_interval = 3.0
+        self.background_refresh_interval = 30.0
+        self.hidden_refresh_interval = 90.0
+        self.update_lock = threading.Lock()
+        self._refresh_now = threading.Event()
         self._drag_data = {"x": 0, "y": 0}
         self.chart_window = None
         self.chart_context = None
         self.chart_refresh_job = None
-        self.chart_refresh_interval_ms = 2000
-        self.chart_kline_refresh_interval_ms = 15000
+        self.chart_refresh_interval_ms = 10000
+        self.chart_kline_refresh_interval_ms = 60000
         self.chart_refresh_queue = queue.Queue()
         
         self.create_widgets()
@@ -212,7 +219,7 @@ class AStockFrame(ttk.Frame):
         ttk.Label(self.detail_frame, textvariable=self.update_time_var, 
                  font=('Arial', 8), foreground='gray').grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(3, 0))
         
-        ttk.Label(self.detail_frame, text="刷新: 1秒", 
+        ttk.Label(self.detail_frame, text="前台: 3秒",
                  font=('Arial', 8), foreground='gray').grid(row=3, column=2, sticky=tk.E, pady=(3, 0))
         
         self.status_var = tk.StringVar(value="就绪")
@@ -220,6 +227,27 @@ class AStockFrame(ttk.Frame):
                  font=('Arial', 8), foreground='gray').grid(row=4, column=0, columnspan=3, sticky=tk.W)
         
         self.refresh_stock_list()
+
+    def set_refresh_active(self, active, visible=True):
+        was_active = self.active
+        self.active = bool(active)
+        self.window_visible = bool(visible)
+        if self.active and not was_active:
+            self.request_refresh()
+
+    def request_refresh(self):
+        self._refresh_now.set()
+
+    def _current_refresh_interval(self):
+        if not self.window_visible:
+            return self.hidden_refresh_interval
+        if not self.active:
+            return self.background_refresh_interval
+        return self.refresh_interval
+
+    def _wait_for_next_refresh(self, seconds):
+        self._refresh_now.wait(max(0.05, seconds))
+        self._refresh_now.clear()
     
     def toggle_detail(self):
         if self.detail_visible:
@@ -893,7 +921,7 @@ class AStockFrame(ttk.Frame):
             self.chart_refresh_queue.put((context, realtime_data, kline_data, refresh_kline))
 
         threading.Thread(target=fetch_in_background, daemon=True).start()
-        context['refresh_poll_job'] = window.after(50, self._poll_chart_refresh_queue)
+        context['refresh_poll_job'] = window.after(100, self._poll_chart_refresh_queue)
 
     def _poll_chart_refresh_queue(self):
         context = self.chart_context
@@ -915,7 +943,7 @@ class AStockFrame(ttk.Frame):
                 self._apply_chart_refresh(context, realtime_data, kline_data, refresh_kline)
 
         if not processed_current and context.get('refresh_in_progress'):
-            context['refresh_poll_job'] = window.after(50, self._poll_chart_refresh_queue)
+            context['refresh_poll_job'] = window.after(100, self._poll_chart_refresh_queue)
 
     def _apply_chart_refresh(self, context, realtime_data, kline_data, refresh_kline):
         try:
@@ -1033,7 +1061,7 @@ class AStockFrame(ttk.Frame):
             self.chart_refresh_queue.put((context, realtime_data, kline_data, True))
 
         threading.Thread(target=fetch_initial_chart, daemon=True).start()
-        context['refresh_poll_job'] = chart_window.after(50, self._poll_chart_refresh_queue)
+        context['refresh_poll_job'] = chart_window.after(100, self._poll_chart_refresh_queue)
     
     def draw_realtime_chart(self, window, full_code, name, realtime_data=None):
         try:
@@ -1769,6 +1797,16 @@ class AStockFrame(ttk.Frame):
     
     def update_prices(self):
         while self.running:
+            if not self.active or not self.window_visible:
+                self._wait_for_next_refresh(1.0)
+                continue
+
+            cycle_started = time.monotonic()
+            acquired = self.update_lock.acquire(blocking=False)
+            if not acquired:
+                self._wait_for_next_refresh(self._current_refresh_interval())
+                continue
+
             try:
                 if self.stocks:
                     stock_codes = list(self.stocks.keys())
@@ -1784,14 +1822,22 @@ class AStockFrame(ttk.Frame):
                     
             except Exception as e:
                 self.after(0, lambda: self.status_var.set(f"更新错误: {str(e)}"))
-            
-            time.sleep(1)
+            finally:
+                self.update_lock.release()
+
+            elapsed = time.monotonic() - cycle_started
+            self._wait_for_next_refresh(self._current_refresh_interval() - elapsed)
     
     def manual_refresh(self):
         self.status_var.set("正在刷新...")
         threading.Thread(target=self._manual_refresh_thread, daemon=True).start()
     
     def _manual_refresh_thread(self):
+        acquired = self.update_lock.acquire(blocking=False)
+        if not acquired:
+            self.after(0, lambda: self.status_var.set("刷新中，请稍候"))
+            return
+
         try:
             if self.stocks:
                 stock_codes = list(self.stocks.keys())
@@ -1806,3 +1852,5 @@ class AStockFrame(ttk.Frame):
                     self.after(0, lambda: self.status_var.set("手动刷新完成"))
         except Exception as e:
             self.after(0, lambda: self.status_var.set(f"刷新失败: {str(e)}"))
+        finally:
+            self.update_lock.release()

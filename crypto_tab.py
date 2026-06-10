@@ -34,7 +34,8 @@ class CryptoFrame(ttk.Frame):
         self.data_sources = [
             {
                 'name': 'Gate.io',
-                'url_template': 'https://api.gateio.ws/api/v4/futures/usdt/tickers?contract={symbol}',
+                'is_batch': True,
+                'url_template': 'https://api.gateio.ws/api/v4/futures/usdt/tickers',
                 'symbol_map': {
                     'BTCUSDT': 'BTC_USDT',
                     'ETHUSDT': 'ETH_USDT',
@@ -349,6 +350,111 @@ class CryptoFrame(ttk.Frame):
     def _wait_for_next_refresh(self, seconds):
         self._refresh_now.wait(max(0.05, seconds))
         self._refresh_now.clear()
+
+    def _to_float(self, value, default=None):
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            try:
+                number = float(value)
+            except Exception:
+                return default
+            return number if number == number and number not in (float('inf'), float('-inf')) else default
+        text = str(value).strip()
+        if not text or text.upper() in ('N/A', 'NA', '--', 'NULL', 'UNCH'):
+            return default
+        text = text.replace('$', '').replace('%', '').replace(',', '').replace('+', '')
+        try:
+            number = float(text)
+            return number if number == number and number not in (float('inf'), float('-inf')) else default
+        except ValueError:
+            return default
+
+    def _get_source_by_name(self, name):
+        for source in self.data_sources:
+            if source['name'] == name:
+                return source
+        return None
+
+    def _auto_source_order(self):
+        sources = list(self.data_sources)
+        if self.last_success_source:
+            sources.sort(key=lambda source: 0 if source['name'] == self.last_success_source else 1)
+        return sources
+
+    def _fetch_gateio_prices(self, source, symbols):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        try:
+            response = requests.get(
+                source['url_template'],
+                headers=headers,
+                proxies=self.proxies if self.proxies else None,
+                timeout=self.request_timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, list):
+                return {}
+
+            entries = {}
+            for entry in data:
+                contract = str(entry.get('contract') or '').upper().strip()
+                if contract:
+                    entries[contract] = entry
+
+            results = {}
+            for symbol in symbols:
+                mapped_symbol = source['symbol_map'].get(symbol, symbol)
+                entry = entries.get(str(mapped_symbol).upper())
+                if not entry:
+                    continue
+
+                price = self._to_float(entry.get('last'))
+                if price is None:
+                    continue
+
+                results[symbol] = {
+                    'price': price,
+                    'change_pct': self._to_float(entry.get('change_percentage'), 0),
+                    'change_amt': self._to_float(entry.get('change_price'), 0),
+                    'high': self._to_float(entry.get('high_24h')),
+                    'low': self._to_float(entry.get('low_24h')),
+                    'source': source['name'],
+                }
+            return results
+        except Exception as e:
+            print(f"从{source['name']}获取加密行情失败: {e}")
+            return {}
+
+    def _fetch_prices_from_source(self, source, symbols):
+        if not symbols:
+            return {}
+
+        if source.get('is_batch'):
+            return self._fetch_gateio_prices(source, symbols)
+
+        results = {}
+        max_workers = min(4, len(symbols))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.fetch_price_from_source, source, symbol): symbol
+                for symbol in symbols
+                if self.running
+            }
+            for future in as_completed(futures):
+                if not self.running:
+                    break
+                symbol = futures[future]
+                try:
+                    price = future.result()
+                except Exception as e:
+                    print(f"刷新{symbol}失败: {e}")
+                    continue
+                if price is not None:
+                    results[symbol] = price
+        return results
     
     def show_add_crypto_dialog(self):
         available_cryptos = {
@@ -482,6 +588,51 @@ class CryptoFrame(ttk.Frame):
             print(f"从{source['name']}获取{symbol}价格失败: {e}")
             return None
     
+    def _refresh_crypto_prices_once(self):
+        symbols = list(self.cryptos.keys())
+        if not symbols:
+            self.after(0, self.refresh_crypto_list)
+            return
+
+        selected = self.selected_source.get()
+        data_by_symbol = {}
+        used_sources = []
+
+        if selected != "自动":
+            source = self._get_source_by_name(selected)
+            if source is not None:
+                fetched = self._fetch_prices_from_source(source, symbols)
+                if fetched:
+                    data_by_symbol.update(fetched)
+                    used_sources.append(source['name'])
+                    self.last_success_source = source['name']
+            else:
+                self.after(0, lambda: self.status_var.set("数据源配置错误"))
+        else:
+            missing_symbols = list(symbols)
+            for source in self._auto_source_order():
+                if not missing_symbols:
+                    break
+                fetched = self._fetch_prices_from_source(source, missing_symbols)
+                if not fetched:
+                    continue
+                data_by_symbol.update(fetched)
+                used_sources.append(source['name'])
+                self.last_success_source = source['name']
+                missing_symbols = [symbol for symbol in missing_symbols if symbol not in fetched]
+
+        if data_by_symbol:
+            self.crypto_data.update(data_by_symbol)
+
+        self.after(0, self.refresh_crypto_list)
+        current_time = time.strftime("%H:%M:%S")
+        self.after(0, lambda: self.update_time_var.set(f"鏈€鍚庢洿鏂? {current_time}"))
+        if used_sources:
+            source_label = used_sources[0] if len(used_sources) == 1 else " + ".join(used_sources[:2])
+            self.after(0, lambda label=source_label: self.status_var.set(f"数据源: {label}"))
+        else:
+            self.after(0, lambda: self.status_var.set("所有数据源失败"))
+
     def fetch_price(self, symbol):
         selected = self.selected_source.get()
         
@@ -578,7 +729,7 @@ class CryptoFrame(ttk.Frame):
                 continue
 
             try:
-                self._refresh_prices_once()
+                self._refresh_crypto_prices_once()
             except Exception as e:
                 self.after(0, lambda: self.status_var.set(f"更新错误: {str(e)}"))
             finally:
@@ -598,7 +749,7 @@ class CryptoFrame(ttk.Frame):
             return
 
         try:
-            self._refresh_prices_once()
+            self._refresh_crypto_prices_once()
             self.after(0, lambda: self.status_var.set("手动刷新完成"))
             
         except Exception as e:

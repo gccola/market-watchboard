@@ -1,0 +1,17 @@
+{
+  "QQQ": {
+    "name": "Invesco QQQ Trust, Series 1",
+    "asset": "ETF",
+    "source": "nasdaq"
+  },
+  "ETU": {
+    "name": "T-Rex 2X Long Ether Daily Target ETF",
+    "asset": "ETF",
+    "source": "nasdaq"
+  },
+  "GDXU": {
+    "name": "MicroSectors Gold Miners 3X Leveraged ETN",
+    "asset": "ETF",
+    "source": "nasdaq"
+  }
+}

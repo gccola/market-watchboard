@@ -626,7 +626,7 @@ class CryptoFrame(ttk.Frame):
 
         self.after(0, self.refresh_crypto_list)
         current_time = time.strftime("%H:%M:%S")
-        self.after(0, lambda: self.update_time_var.set(f"鏈€鍚庢洿鏂? {current_time}"))
+        self.after(0, lambda: self.update_time_var.set(f"最后更新: {current_time}"))
         if used_sources:
             source_label = used_sources[0] if len(used_sources) == 1 else " + ".join(used_sources[:2])
             self.after(0, lambda label=source_label: self.status_var.set(f"数据源: {label}"))

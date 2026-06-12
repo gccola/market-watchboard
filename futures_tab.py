@@ -170,23 +170,18 @@ class FuturesFrame(ttk.Frame):
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
 
-        columns = ('symbol', 'name', 'price', 'change_amount', 'change', 'high', 'low')
+        columns = ('symbol', 'name', 'price', 'change_amount', 'change')
         self.futures_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=8)
         self.futures_tree.heading('symbol', text='代码')
         self.futures_tree.heading('name', text='名称')
         self.futures_tree.heading('price', text='现价')
         self.futures_tree.heading('change_amount', text='涨跌额')
         self.futures_tree.heading('change', text='涨跌幅')
-        self.futures_tree.heading('high', text='高')
-        self.futures_tree.heading('low', text='低')
-
         self.futures_tree.column('symbol', width=72, minwidth=68, anchor='center')
         self.futures_tree.column('name', width=82, minwidth=70, anchor='center')
         self.futures_tree.column('price', width=76, minwidth=64, anchor='e')
         self.futures_tree.column('change_amount', width=70, minwidth=60, anchor='e')
         self.futures_tree.column('change', width=68, minwidth=60, anchor='e')
-        self.futures_tree.column('high', width=76, minwidth=64, anchor='e')
-        self.futures_tree.column('low', width=76, minwidth=64, anchor='e')
 
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.futures_tree.yview)
         self.futures_tree.configure(yscrollcommand=scrollbar.set)
@@ -268,8 +263,6 @@ class FuturesFrame(ttk.Frame):
             'change': change,
             'previous_close': previous_close,
             'open': self._to_float(parts[8], previous_close),
-            'high': self._to_float(parts[4], price),
-            'low': self._to_float(parts[5], price),
             'session': '24H',
             'raw_session': 'GLOBAL_FUTURES',
             'time': f"{parts[12]} {parts[6]}".strip(),
@@ -288,9 +281,6 @@ class FuturesFrame(ttk.Frame):
                 change = data.get('change') or 0
                 change_amount_str = f"{change_amount:+.2f}"
                 change_str = f"{change:+.2f}%"
-                high_str = self._format_price(data.get('high'))
-                low_str = self._format_price(data.get('low'))
-
                 if change > 0:
                     tag = 'up'
                 elif change < 0:
@@ -301,14 +291,14 @@ class FuturesFrame(ttk.Frame):
                 self.futures_tree.insert(
                     '',
                     'end',
-                    values=(symbol, item.get('name', symbol), price_str, change_amount_str, change_str, high_str, low_str),
+                    values=(symbol, item.get('name', symbol), price_str, change_amount_str, change_str),
                     tags=(tag,)
                 )
             else:
                 self.futures_tree.insert(
                     '',
                     'end',
-                    values=(symbol, item.get('name', symbol), '--', '--', '--', '--', '--'),
+                    values=(symbol, item.get('name', symbol), '--', '--', '--'),
                     tags=('flat',)
                 )
 
@@ -620,8 +610,7 @@ class FuturesFrame(ttk.Frame):
 
             self.chart_info_var.set(
                 f"{symbol} 现价 {self._format_price(snapshot.get('price') if snapshot else latest_price)}  "
-                f"涨跌 {change_amount:+.2f} / {change:+.2f}%  "
-                f"高 {self._format_price(snapshot.get('high'))}  低 {self._format_price(snapshot.get('low'))}"
+                f"涨跌 {change_amount:+.2f} / {change:+.2f}%"
             )
         finally:
             context['refresh_in_progress'] = False
